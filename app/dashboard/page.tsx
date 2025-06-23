@@ -374,7 +374,7 @@ export default function Dashboard() {
                   <Button
                     variant="outline"
                     size="sm"
-                    className="border-[#0AF395]/30 text-[#0AF395] hover:bg-[#0AF395]/15 hover:border-[#0AF395]/60 hover:text-[#0AF395] text-xs h-9 transition-all duration-200"
+                    className="border-[#0AF395]/30 text-[#0B2420] hover:bg-[#0AF395]/15 hover:border-[#0AF395]/60 hover:text-[#0AF395] text-xs h-9 transition-all duration-200"
                   >
                     View Documentation
                   </Button>

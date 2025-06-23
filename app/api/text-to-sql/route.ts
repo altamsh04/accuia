@@ -1,7 +1,6 @@
 import { type NextRequest, NextResponse } from "next/server"
 
-const AI_BACKEND =
-  process.env.NEXT_PUBLIC_AI_BACKEND
+const AI_BACKEND = process.env.NEXT_PUBLIC_AI_BACKEND;
 
 /**
  * POST /api/text-to-sql
