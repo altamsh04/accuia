@@ -10,7 +10,7 @@ import {
 
 import { Label } from "@/components/ui/label"
 
-import type React from "react"
+import React from "react"
 
 import { useEffect, useState } from "react"
 import { useParams, useRouter } from "next/navigation"
@@ -42,6 +42,7 @@ import {
 // Add these imports at the top
 import { Textarea } from "@/components/ui/textarea"
 import { Send } from "lucide-react"
+import { useToast } from "@/hooks/use-toast"
 
 interface Column {
   column_name: string
@@ -61,11 +62,9 @@ interface DbContext {
 // Add these interfaces after the existing interfaces
 interface ChatMessage {
   id: string
-  type: "user" | "assistant" | "sql" | "results"
+  type: "user" | "assistant" | "results"
   content: string
   timestamp: Date
-  sqlQuery?: string
-  confidence?: string
   queryResults?: any
 }
 
@@ -158,7 +157,7 @@ function CardDesigner({ project, onSave }: { project: Project; onSave: (design: 
     }))
   }
 
-  const handleColumnAssignment = (sectionId: string, columnName: string) => {
+  const handleColumnAssignment = (sectionId: string, columnName: string | undefined) => {
     setCardDesign((prev) => ({
       ...prev,
       sections: prev.sections.map((section) =>
@@ -167,11 +166,19 @@ function CardDesigner({ project, onSave }: { project: Project; onSave: (design: 
     }))
   }
 
+  const [isSaving, setIsSaving] = useState(false);
+  const [saved, setSaved] = useState(false);
+
   const handleSave = async () => {
+    setIsSaving(true);
     try {
       await onSave(cardDesign)
+      setSaved(true);
+      setTimeout(() => setSaved(false), 3000);
     } catch (error) {
       console.error("Error saving card design:", error)
+    } finally {
+      setIsSaving(false);
     }
   }
 
@@ -254,8 +261,15 @@ function CardDesigner({ project, onSave }: { project: Project; onSave: (design: 
         <Button
           onClick={handleSave}
           className="bg-[#0AF395] text-[#0B2420] hover:bg-[#0AF395]/90 transition-all duration-200 hover:scale-105"
+          disabled={isSaving}
         >
-          Save Design
+          {isSaving ? (
+            <><Loader2 className="w-4 h-4 mr-2 animate-spin" />Saving...</>
+          ) : saved ? (
+            "Saved"
+          ) : (
+            "Save Design"
+          )}
         </Button>
       </div>
 
@@ -477,70 +491,10 @@ function ChatInterface({ project }: { project: Project }) {
     const welcomeMessage: ChatMessage = {
       id: Date.now().toString(),
       type: "assistant",
-      content: `Hello! I'm ready to help you query your ${project.db_context.table_name} database. You can ask me questions about your data in natural language, and I'll convert them to SQL queries for you.`,
+      content: `Hello! I'm ready to help you query your ${project.db_context.table_name} database. You can ask me questions about your data in natural language, and I'll provide intelligent responses with results.`,
       timestamp: new Date(),
     }
     setMessages([welcomeMessage])
-  }
-
-  const filterDbContextForAllowedColumns = (dbContext: DbContext) => {
-    // Filter columns to only include allowed ones
-    const allowedColumns = dbContext.columns.filter((col) => col.allow !== false)
-
-    // Get allowed column names
-    const allowedColumnNames = allowedColumns.map((col) => col.column_name)
-
-    // Filter sample data to only include allowed columns
-    const filteredSampleData = dbContext.sample_data.map((record) => {
-      const filteredRecord: Record<string, any> = {}
-      allowedColumnNames.forEach((columnName) => {
-        if (record.hasOwnProperty(columnName)) {
-          filteredRecord[columnName] = record[columnName]
-        }
-      })
-      return filteredRecord
-    })
-
-    return {
-      table_name: dbContext.table_name,
-      columns: allowedColumns,
-      sample_data: filteredSampleData,
-    }
-  }
-
-  const executeQuery = async (sqlQuery: string) => {
-    try {
-      const requestBody = {
-        user: project.encrypted_db_user,
-        password: project.encrypted_db_password,
-        host: project.encrypted_db_host,
-        port: project.encrypted_db_port,
-        dbname: project.encrypted_db_name,
-        sql: sqlQuery,
-      }
-
-      console.log("Executing SQL query:", sqlQuery)
-
-      const response = await fetch("/api/query-execute", {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify(requestBody),
-      })
-
-      if (!response.ok) {
-        throw new Error(`HTTP error! status: ${response.status}`)
-      }
-
-      const result = await response.json()
-      console.log("Query execution result:", result)
-
-      return result
-    } catch (error) {
-      console.error("Error executing query:", error)
-      throw error
-    }
   }
 
   const handleSendMessage = async () => {
@@ -558,28 +512,31 @@ function ChatInterface({ project }: { project: Project }) {
     setIsLoading(true)
 
     try {
-      // Step 1: Get SQL query from text-to-sql
-      const filteredDbContext = filterDbContextForAllowedColumns(project.db_context)
-
-      const textToSqlBody = {
-        query: userMessage.content,
-        db_context: filteredDbContext,
-        gemini_api_key: project.encrypted_gemini_api_key,
+      // Get current user ID from Supabase
+      const { data: { user }, error: userError } = await supabase.auth.getUser()
+      if (userError || !user) {
+        throw new Error("User not authenticated. Please sign in again.")
       }
 
-      console.log("Sending request to text_to_sql:", textToSqlBody)
+      // Use the new smart_query API
+      const smartQueryBody = {
+        user_id: user.id,
+        query: userMessage.content,
+        role: "user"
+      }
 
-      const sqlResponse = await fetch("/api/text-to-sql", {
+      console.log("Sending request to smart_query:", smartQueryBody)
+
+      const response = await fetch("/api/smart-query", {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
         },
-        body: JSON.stringify(textToSqlBody),
+        body: JSON.stringify(smartQueryBody),
       })
 
-      // -- after the sqlResponse line --
-      if (!sqlResponse.ok) {
-        const errorText = (await sqlResponse.text()) || `HTTP ${sqlResponse.status}: text_to_sql failed`
+      if (!response.ok) {
+        const errorText = (await response.text()) || `HTTP ${response.status}: smart_query failed`
         let userFriendlyMessage = ""
 
         try {
@@ -588,29 +545,32 @@ function ChatInterface({ project }: { project: Project }) {
           const backendError = errorData.error || errorText
 
           // Check for specific error patterns and provide helpful suggestions
-          if (backendError.includes("Only SELECT queries are allowed")) {
+          if (backendError.includes("No project found")) {
             userFriendlyMessage =
-              "🔒 Security Restriction: Only SELECT (read-only) queries are allowed for safety.\n\n💡 Try asking questions like:\n• 'Show me the first 10 products'\n• 'Find products with price less than $50'\n• 'What are the most popular categories?'\n\nAvoid requests that would modify data (INSERT, UPDATE, DELETE)."
-          } else if (backendError.includes("Invalid SQL query structure")) {
+              "❌ No project found for your account.\n\n💡 Please create a project first or check your project settings."
+          } else if (backendError.includes("Failed to decrypt")) {
             userFriendlyMessage =
-              "❌ Query Structure Issue: The AI couldn't generate a valid SQL query from your request.\n\n💡 Try being more specific:\n• Use exact column names from your schema\n• Ask simpler questions\n• Break complex requests into smaller parts\n• Example: 'Show products where price is greater than 100'"
+              "🔐 Encryption Error: There's an issue with your project's encrypted credentials.\n\n💡 Please check your project configuration and try again."
+          } else if (backendError.includes("Failed to generate SQL")) {
+            userFriendlyMessage =
+              "🤖 AI Error: The AI couldn't process your request.\n\n💡 Try:\n• Rephrasing your question\n• Being more specific\n• Using simpler language"
+          } else if (backendError.includes("Invalid, please try again")) {
+            userFriendlyMessage =
+              "❌ Query Validation Failed: The generated query was invalid.\n\n💡 Try:\n• Asking a different question\n• Being more specific about what you want\n• Using column names from your schema"
+          } else if (backendError.includes("Failed to execute SQL")) {
+            userFriendlyMessage =
+              "💾 Database Error: The query couldn't be executed.\n\n💡 This might be due to:\n• Invalid column names\n• Database connection issues\n• Permission problems"
           } else if (backendError.includes("timeout") || backendError.includes("Timeout")) {
             userFriendlyMessage =
-              "⏱️ Request Timeout: The AI backend took too long to respond.\n\n💡 Try:\n• Asking a simpler question\n• Being more specific about what you want\n• Checking your internet connection"
-          } else if (backendError.includes("rate limit") || backendError.includes("Rate limit")) {
-            userFriendlyMessage =
-              "🚦 Rate Limit: Too many requests sent recently.\n\n💡 Please wait a moment and try again."
-          } else if (backendError.includes("API key") || backendError.includes("authentication")) {
-            userFriendlyMessage =
-              "🔑 Authentication Issue: There's a problem with your Gemini API key.\n\n💡 Check your project settings and ensure your API key is valid."
+              "⏱️ Request Timeout: The processing took too long.\n\n💡 Try:\n• Asking a simpler question\n• Being more specific\n• Checking your internet connection"
           } else {
             userFriendlyMessage =
-              "❌ Something went wrong with the AI backend.\n\n💡 Try:\n• Rephrasing your question\n• Using simpler language\n• Being more specific about what data you want\n\nIf the problem persists, check your project configuration."
+              "❌ Something went wrong with your query.\n\n💡 Try:\n• Rephrasing your question\n• Using simpler language\n• Being more specific about what data you want"
           }
         } catch (parseError) {
           // If we can't parse the error, provide a generic helpful message
           userFriendlyMessage =
-            "❌ Something went wrong with your query.\n\n💡 Try:\n• Rephrasing your question in simpler terms\n• Being more specific about what you want to find\n• Using column names from your schema\n• Example: 'Show me products sorted by price'"
+            "❌ Something went wrong with your query.\n\n💡 Try:\n• Rephrasing your question in simpler terms\n• Being more specific about what you want to find\n• Using column names from your schema"
         }
 
         const errorMsg: ChatMessage = {
@@ -624,30 +584,13 @@ function ChatInterface({ project }: { project: Project }) {
         return
       }
 
-      const sqlResult = await sqlResponse.json()
+      const result = await response.json()
 
-      if (!sqlResult.sql_query) {
-        let userFriendlyMessage = ""
-
-        if (typeof sqlResult === "string") {
-          userFriendlyMessage = sqlResult
-        } else if (sqlResult.error) {
-          // Handle specific backend errors in the response
-          if (sqlResult.error.includes("Only SELECT queries are allowed")) {
-            userFriendlyMessage =
-              "🔒 Security Restriction: Only SELECT (read-only) queries are allowed.\n\n💡 Try asking questions like:\n• 'Show me the top 5 products'\n• 'Find items in a specific category'\n• 'What's the average price?'"
-          } else {
-            userFriendlyMessage = `❌ ${sqlResult.error}\n\n💡 Try rephrasing your question or being more specific about what you want to find.`
-          }
-        } else {
-          userFriendlyMessage =
-            "❌ The AI couldn't generate a SQL query from your request.\n\n💡 Try:\n• Being more specific about what you want\n• Using simpler language\n• Mentioning specific column names\n• Example: 'Show products with price greater than 50'"
-        }
-
+      if (!result.success) {
         const errorMsg: ChatMessage = {
           id: (Date.now() + 1).toString(),
           type: "assistant",
-          content: userFriendlyMessage,
+          content: result.message || "Query failed. Please try again.",
           timestamp: new Date(),
         }
         setMessages((prev) => [...prev, errorMsg])
@@ -655,35 +598,20 @@ function ChatInterface({ project }: { project: Project }) {
         return
       }
 
-      // Add SQL query message
-      const sqlMessage: ChatMessage = {
+      // Create assistant message with results and summary
+      const assistantMessage: ChatMessage = {
         id: (Date.now() + 1).toString(),
-        type: "sql",
-        content: `Generated SQL Query (Confidence: ${sqlResult.confidence || "Unknown"})`,
-        sqlQuery: sqlResult.sql_query,
-        confidence: sqlResult.confidence,
+        type: "results",
+        content: result.message || "Query completed successfully!",
+        queryResults: {
+          success: result.success,
+          data: result.result,
+          row_count: Array.isArray(result.result) ? result.result.length : 0
+        },
         timestamp: new Date(),
       }
 
-      setMessages((prev) => [...prev, sqlMessage])
-
-      // Step 2: Execute the SQL query
-      if (sqlResult.sql_query) {
-        const queryResult = await executeQuery(sqlResult.sql_query)
-
-        // Add results message
-        const resultsMessage: ChatMessage = {
-          id: (Date.now() + 2).toString(),
-          type: "results",
-          content: queryResult.success
-            ? `Query executed successfully! Found ${queryResult.row_count || 0} results.`
-            : `Query failed: ${queryResult.error || "Unknown error"}`,
-          queryResults: queryResult,
-          timestamp: new Date(),
-        }
-
-        setMessages((prev) => [...prev, resultsMessage])
-      }
+      setMessages((prev) => [...prev, assistantMessage])
     } catch (error) {
       console.error("Error processing message:", error)
       const errorMessage: ChatMessage = {
@@ -715,7 +643,7 @@ function ChatInterface({ project }: { project: Project }) {
           <h3 className="text-lg font-semibold text-[#FCFEFF] mb-2">Ready to Chat with Your Data</h3>
           <p className="text-sm text-[#FCFEFF]/60 max-w-md mb-6">
             Start a conversation with your {project.db_context.table_name} database. Ask questions in natural language
-            and get intelligent responses.
+            and get intelligent responses with results.
           </p>
           <Button onClick={handleStartChat} className="bg-[#0AF395] text-[#0B2420] hover:bg-[#0AF395]/90">
             <MessageSquare className="w-4 h-4 mr-2" />
@@ -738,66 +666,29 @@ function ChatInterface({ project }: { project: Project }) {
                   className={`max-w-[85%] sm:max-w-[80%] lg:max-w-[70%] rounded-lg p-3 ${
                     message.type === "user"
                       ? "bg-[#0AF395] text-[#0B2420]"
-                      : message.type === "sql"
-                        ? "bg-[#0B0F14]/50 text-[#FCFEFF] border border-blue-500/20"
-                        : message.type === "results"
-                          ? "bg-[#0B0F14]/50 text-[#FCFEFF] border border-green-500/20 w-full max-w-none"
-                          : "bg-[#0B0F14]/50 text-[#FCFEFF] border border-[#0AF395]/20"
+                      : message.type === "results"
+                        ? "bg-[#0B0F14]/50 text-[#FCFEFF] border border-green-500/20 w-full max-w-none"
+                        : "bg-[#0B0F14]/50 text-[#FCFEFF] border border-[#0AF395]/20"
                   }`}
                 >
-                  {/* Regular message content */}
-                  <div className="text-sm whitespace-pre-wrap break-words">{message.content}</div>
-
-                  {/* SQL Query display */}
-                  {message.type === "sql" && message.sqlQuery && (
-                    <div className="mt-3 p-3 bg-[#0B0F14]/70 rounded border border-blue-500/10">
-                      <div className="flex items-center justify-between mb-2 flex-wrap gap-2">
-                        <span className="text-xs text-blue-400 font-semibold">SQL Query</span>
-                        {message.confidence && (
-                          <Badge
-                            className={`text-xs ${
-                              message.confidence === "HIGH"
-                                ? "bg-green-500/20 text-green-400"
-                                : message.confidence === "MEDIUM"
-                                  ? "bg-yellow-500/20 text-yellow-400"
-                                  : "bg-red-500/20 text-red-400"
-                            }`}
-                          >
-                            {message.confidence}
-                          </Badge>
-                        )}
-                      </div>
-                      <div className="overflow-x-auto">
-                        <code className="text-xs font-mono text-[#FCFEFF]/90 block whitespace-pre-wrap break-all">
-                          {message.sqlQuery}
-                        </code>
-                      </div>
-                    </div>
-                  )}
+                  {/* Message content */}
+                  <div className="text-sm whitespace-pre-wrap break-words mb-3">{message.content}</div>
 
                   {/* Query Results display */}
-                  {message.type === "results" && message.queryResults && (
+                  {message.type === "results" && message.queryResults && message.queryResults.success && message.queryResults.data && (
                     <div className="mt-3">
-                      {message.queryResults.success && message.queryResults.data ? (
-                        <div className="space-y-4">
-                          <div className="flex items-center justify-between flex-wrap gap-2">
-                            <span className="text-sm font-semibold text-green-400">
-                              Results ({message.queryResults.row_count} records)
-                            </span>
-                          </div>
-                          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-2 xl:grid-cols-3 gap-3 sm:gap-4">
-                            {message.queryResults.data.map((item: any, index: number) => (
-                              <ResultCard key={index} data={item} index={index} cardDesign={project.card_design} />
-                            ))}
-                          </div>
-                        </div>
-                      ) : (
-                        <div className="p-3 bg-red-500/10 border border-red-500/20 rounded">
-                          <span className="text-sm text-red-400 break-words">
-                            {message.queryResults.error || "Query execution failed"}
+                      <div className="space-y-4">
+                        <div className="flex items-center justify-between flex-wrap gap-2">
+                          <span className="text-sm font-semibold text-green-400">
+                            Results ({message.queryResults.row_count} records)
                           </span>
                         </div>
-                      )}
+                        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-2 xl:grid-cols-3 gap-3 sm:gap-4">
+                          {message.queryResults.data.map((item: any, index: number) => (
+                            <ResultCard key={index} data={item} index={index} cardDesign={project.card_design} />
+                          ))}
+                        </div>
+                      </div>
                     </div>
                   )}
 
@@ -861,16 +752,23 @@ export default function ProjectChatPage() {
   const [project, setProject] = useState<Project | null>(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
+  const { toast } = useToast();
 
   useEffect(() => {
     const fetchProject = async () => {
       try {
         const {
           data: { user },
+          error: userError,
         } = await supabase.auth.getUser()
-        if (!user) {
+
+        if (userError || !user) {
           router.push("/login")
           return
+        }
+
+        if (!params.id || typeof params.id !== 'string') {
+          throw new Error("Invalid project ID")
         }
 
         const { data, error } = await supabase
@@ -883,7 +781,7 @@ export default function ProjectChatPage() {
         if (error) throw error
         if (!data) throw new Error("Project not found")
 
-        setProject(data)
+        setProject(data as unknown as Project)
       } catch (error: any) {
         console.error("Error fetching project:", error)
         setError(error.message)
@@ -957,16 +855,21 @@ export default function ProjectChatPage() {
   }
 
   const handleSaveCardDesign = async (design: CardDesign) => {
+    if (!project) return;
     try {
       const { error } = await supabase.from("projects").update({ card_design: design }).eq("id", project.id)
-
       if (error) throw error
-
-      // Update local state
       setProject((prev) => (prev ? { ...prev, card_design: design } : null))
-
-      // Show success message (you can add a toast here)
-      console.log("Card design saved successfully")
+      toast({
+        title: "Card design saved!",
+        description: (
+          <div className="flex items-center gap-2 text-green-600 dark:text-green-400 font-bold">
+            <CheckCircle className="w-5 h-5" />
+            <span>Your card design has been successfully saved and updated.</span>
+          </div>
+        ),
+        className: "bg-green-50 dark:bg-green-900 border-green-200 dark:border-green-700"
+      })
     } catch (error) {
       console.error("Error saving card design:", error)
     }
@@ -1205,7 +1108,7 @@ export default function ProjectChatPage() {
                                           {column.column_name}
                                         </span>
                                         {column.column_name === "id" && (
-                                          <Key className="w-3 h-3 text-yellow-400" title="Primary Key" />
+                                          <Key className="w-3 h-3 text-yellow-400" />
                                         )}
                                         {!isAllowed && (
                                           <Badge className="bg-red-500/20 text-red-400 border-red-500/30 text-xs px-2 py-0.5">
@@ -1384,24 +1287,7 @@ export default function ProjectChatPage() {
                   <CardContent>
                     <CardDesigner
                       project={project}
-                      onSave={async (design) => {
-                        try {
-                          const { error } = await supabase
-                            .from("projects")
-                            .update({ card_design: design })
-                            .eq("id", project.id)
-
-                          if (error) throw error
-
-                          // Update local state
-                          setProject((prev) => (prev ? { ...prev, card_design: design } : null))
-
-                          // Show success message (you can add a toast here)
-                          console.log("Card design saved successfully")
-                        } catch (error) {
-                          console.error("Error saving card design:", error)
-                        }
-                      }}
+                      onSave={handleSaveCardDesign}
                     />
                   </CardContent>
                 </Card>
